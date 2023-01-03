@@ -1,0 +1,4 @@
+keys/**
+**/__pycache__
+oracle_orfeed
+.env
