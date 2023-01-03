@@ -1,0 +1,8 @@
+{"known_contracts": {"eth": "0x0000000000000000000000000000000000000000",
+                   "dai": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+                   "weth": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                   "dydx": "0x92D6C1e31e14520e676a687F0a93788B716BEff5",
+                   "bat": "0x0D8775F648430679A709E98d2b0Cb6250d2887EF",
+                   "wbtc": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+                    "usdt": "0xDAC17F958D2EE523A2206206994597C13D831EC7",
+                   "iotex": "0x6fB3e0A217407EFFf7Ca062D46c26E5d60a14d69"}}
