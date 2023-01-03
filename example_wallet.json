@@ -1,0 +1,7 @@
+{
+  "wallet": {
+  "address":  "0xbeefee3eda347239505d47e1af09ed6316b9e0b0",
+  "private_key": "e5c8b8782c22b514ba889d780394ef6630d739ff263bff92fb1dfd2cb98cec81",
+  "comment": "Do not actually use this wallet! It is public and for example only!"
+  }
+}

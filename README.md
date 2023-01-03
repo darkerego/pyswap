@@ -6,6 +6,18 @@ to support any dex that is a direct fork of uniswap by modifying the
 json file `data/dex_contracts.json`.
 </p>
 
+### Demo 
+
+<p>
+This asciinema demonstrates swapping DAI to WMATIC (wrapped matic) on 
+kyberswap. Note that sometimes dexes are weird about native assets that are 
+not Ethereum, so you may have to swap your assets into a wrapped asset in 
+order to do this programatically. I am not sure why that is, but solving 
+it is one of the things on the TODO list.
+</p>
+
+[![asciicast](https://asciinema.org/a/ZhXtuUkOnXUbzznqEwrKNqZ86.svg)](https://asciinema.org/a/ZhXtuUkOnXUbzznqEwrKNqZ86)
+
 <pre>
 usage: Pyswap Usage. See docs for details.
 
@@ -37,10 +49,19 @@ options:
 
 ### Configuration
 <p>
+<b>To get running ... </b>
 
-- To get running you only need to copy .env.example to .env and put your 
-infura endpoints in there. 
+- Copy .env.example to .env and put your 
+infura endpoints in there
+- Copy example_wallet.json to keys/default_wallet.json and add your address and key.
+-  
 
+      -  FYI: If you want a cool vanity address like this one: 0xffffad719353ff7cba6c1799deae8ad8d94d8724 , check out my vanity address generator: https://github.com/darkerego/ethervain
 - To add more known tokens that can be referanced by name, 
 just add them to data/tokens_ethereum.json and data/tokens_polygon.json
 </p>
+
+
+### TOOD
+
+- Figure out why in some cases we cannot swap native assets other than ETH

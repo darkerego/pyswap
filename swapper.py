@@ -1,11 +1,14 @@
 #!/usr/bin/env python3.10
 import json
 import os
+import pprint
+import time
+from eth_typing.evm import ChecksumAddress
 from uniswap import Uniswap
 import web3
 import argparse
 import dotenv
-from web3.exceptions import ContractLogicError
+from web3.exceptions import ContractLogicError, TransactionNotFound
 from web3.middleware import geth_poa_middleware
 
 import lib.abi_lib
@@ -31,34 +34,89 @@ class Swapper:
                                               _private_key=_private_key_, _address=_address_, _network=network)
         self.setup_w3_post()
         self.address = self.w3.toChecksumAddress(_address_)
+        self.native_map = None
         self.version = version
         self.known = None
         self.eth_balance = 0.0
         self._print = style.PrettyText()
         self.load_known_contracts()
 
-    def setup_provider(self, network):
+    def setup_provider(self, network) -> str:
+        """
+        Get the web3 rpc endpoint for this network
+        :param network: the name of the chain (ie ethereum)
+        :return: str(the provider endpoint url)
+        """
         provider = os.environ.get(f'{network}_http_endpoint')
         return provider
 
-    def setup_w3_post(self):
+    def setup_w3_post(self) -> None:
+        """
+        Load any required middleware for this chain.
+        :return: None
+        """
         if self.network == 'ethereum':
             return
         else:
             self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
         s.good(f'Web3 connected to chain: {self.w3.eth.chain_id}')
 
-    def native_currency(self):
-        natives = {"ethereum": "eth", "polygon": "matic"}
-        return natives.get(self.network)
+    def _load(self, file) -> any:
+        """
+        Load json file
+        :param file: input
+        :return: any
+        """
+        with open(file, 'r') as _f:
+            return json.load(fp=_f)
 
-    def load_known_contracts(self):
-        with open(f'data/tokens_{self.network}.json', 'r') as f:
-            self.known = json.load(fp=f)
-        self.known = self.known.get('known_contracts')
-        # s.normal(f'Loaded {len(self.known)} known contract addresses .. ')
+    @property
+    def native_assets(self):
+        """
+        Property getter, return the native currency for this network.
+        """
+        if self.native_map is None:
+            self.native_map = self._load(f'data/native_currency.json').get('native_assets')
+            # print(self.native_map)
+        return self.native_map.get(self.network)
 
-    def setup_dex_backend(self, backend: str, _version: int, provider:str, _network:str, _private_key:str, _address:str):
+    def load_known_contracts(self) -> None:
+        """
+        Load known contract symbol aliases to address mappings from
+        data/tokens_$network.json
+        :return:
+        """
+        known = self._load(f'data/tokens_{self.network}.json')
+        self.known = known.get('known_contracts')
+
+    def add_known_contract(self, contract_address: str, symbol: str) -> None:
+        """
+        Add a contract address to symbol mapping to the local db
+        :return: None
+        """
+
+        assert type(self.w3.toChecksumAddress(contract_address)) == ChecksumAddress
+        current_known = self._load(f'data/tokens_{self.network}.json')
+        current_known['known_contracts'][symbol] = contract_address
+        with open(f'data/tokens_{self.network}.json', 'w') as ff:
+            json.dump(current_known, fp=ff)
+
+    def setup_dex_backend(self, backend: str,
+                          _version: int,
+                          provider: str,
+                          _network: str,
+                          _private_key: str,
+                          _address: str) -> (Uniswap, bool):
+        """
+        Configure the Uniswap object class with the user supplied parameters.
+        :param backend: the dex to use
+        :param _version: uniswap version
+        :param provider: endpoint for web3
+        :param _network: the chain to connect to
+        :param _private_key: users wallet key
+        :param _address: users wallet address
+        :return: Uniswap, None
+        """
         factory_contract_addr = None
         router_contract_addr = None
 
@@ -81,20 +139,88 @@ class Swapper:
         if router_contract_addr and factory_contract_addr:
             return Uniswap(address=_address, private_key=_private_key, version=_version, provider=provider,
                            factory_contract_addr=web3.Web3.toChecksumAddress(factory_contract_addr),
-                           router_contract_addr=web3.Web3.toChecksumAddress(router_contract_addr))
+                           router_contract_addr=web3.Web3.toChecksumAddress(router_contract_addr),
+                           web3=self.w3)
         return None
 
-    def balance(self, input_token, address=None):
+    def poll_tx_for_receipt(self, tx_hash: hex) -> (dict, bool):
+        """
+        Given a txid hash, query chain until tx confirms and return True.
+        If not confirmed in 100 seconds, something is wrong, return False.
+        :param tx_hash: hex txid
+        :return: bool
+        """
+        poll = 0
+        while True:
+            if poll > 100:
+                break
+            poll += 1
+            self._print.normal(f'Polling for receipt: {poll}/100 ... ')
+            try:
+                receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+            except TransactionNotFound:
+                time.sleep(1)
+            else:
+                receipt = receipt.__dict__
+                pprint.pprint(receipt)
+                return receipt
+        return False
+
+    def balance(self, input_token, address=None) -> float:
+        """
+        Get the web3 balance for this account, if no contract address
+        is specified get the ethereum balance.
+        :param input_token: contract address
+        :param address: account to check
+        :return: the balance
+        """
         if not address:
             address = self.address
-        if self.known.get(self.native_currency()) == input_token:
+        if self.known.get(self.native_assets) == input_token:
             balance = self.w3.eth.get_balance(self.w3.toChecksumAddress(address))
         else:
             contract = self.w3.eth.contract(input_token, abi=lib.abi_lib.EIP20_ABI)
             balance = contract.functions.balanceOf(self.w3.toChecksumAddress(address)).call()
         return balance
 
-    def verify(self, input_token, output_token):
+    def parse_contract(self, contract_address) -> (str, int):
+        local = False
+        token_address = None
+        for k, v in self.known.items():
+            if k == contract_address:
+                token_address = self.w3.toChecksumAddress(v)
+                local = True
+            else:
+                if v == contract_address:
+                    local = True
+        if not token_address:
+            token_address = self.w3.toChecksumAddress(contract_address)
+        try:
+            this_contract = self.w3.eth.contract(token_address, abi=lib.abi_lib.EIP20_ABI)
+        except web3.exceptions.NameNotFound:
+            self._print.error(f'Invalid Contract Address: {contract_address} or symbol alias is not known locally. '
+                              f'See docs for more info.')
+            return False
+        else:
+            if self.known.get(self.native_assets) == token_address:
+                _symbol = self.native_assets
+                _decimals = 18
+            else:
+                _symbol = this_contract.functions.symbol().call()
+                _decimals = this_contract.functions.decimals().call()
+                if not local:
+                    self._print.normal('Adding contract address to local db ... ')
+                    self.add_known_contract(token_address, _symbol)
+        return _symbol, _decimals
+
+    def verify(self, input_token, output_token) -> (tuple, bool):
+        """
+        Verify that the given contract addresses are valid contract addresses of evm tokens and
+        return those tokens metadata.
+
+        :return:  str(input_symbol), int(input_decimals), str(input_token), str(output_token), str(out_symbol),
+        int(out_decimals)
+        """
         if not input_token:
             self._print.error('Must specify input token!')
             return False
@@ -108,36 +234,17 @@ class Swapper:
             else:
                 if self.known.get(output_token):
                     output_token = self.w3.toChecksumAddress(self.known.get(output_token))
-                else:
-                    output_token = output_token
-                try:
-                    output_contract = self.w3.eth.contract(output_token, abi=lib.abi_lib.EIP20_ABI)
-                except web3.exceptions.NameNotFound:
-                    self._print.error(f'Invalid Contract Address: {output_token}')
-                    return False
-                else:
-                    if self.known.get(self.native_currency()) == output_token:
-                        out_symbol = self.native_currency()
-                        out_decimals = 18
-                    else:
-                        out_symbol = output_contract.functions.symbol().call()
-                        out_decimals = output_contract.functions.decimals().call()
+                out_symbol, out_decimals = self.parse_contract(output_token)
+                input_symbol, input_decimals = self.parse_contract(input_token)
 
-                try:
-                    input_contract = self.w3.eth.contract(input_token, abi=lib.abi_lib.EIP20_ABI)
-                except web3.exceptions.NameNotFound:
-                    self._print.error(f'Invalid Contract Address: {input_token}')
-                    return False
-                else:
-                    if self.known.get(self.native_currency()) == input_token:
-                        symbol = self.native_currency()
-                        decimals = 18
-                    else:
-                        symbol = input_contract.functions.symbol().call()
-                        decimals = input_contract.functions.decimals().call()
-                    return symbol, decimals, input_token, output_token, out_symbol, out_decimals
+                return input_symbol, input_decimals, input_token, output_token, out_symbol, out_decimals
 
-    def quote_v3(self, input_token, output_token, out_decimals, raw_qty=0, fee=3000):
+    def quote_v3(self, input_token, output_token, out_decimals, raw_qty=0, fee=3000) -> (float, bool):
+        """
+        Quote function for Uniswa v3. See documentation of Swapper.quote()
+        :param fee: Optional liquidity pool fee. Uniswap will usually correctly assume this for us.
+        :return: (float, bool)
+        """
         try:
             raw_amount = self.uniswap.get_price_input(input_token, output_token, raw_qty, fee=fee)
         except ContractLogicError as err:
@@ -150,7 +257,12 @@ class Swapper:
 
             return amount
 
-    def quote_v2(self, input_token, output_token, out_decimals, raw_qty):
+    def quote_v2(self, input_token, output_token, out_decimals, raw_qty) -> (float, bool):
+        """
+        Quote function for uniswap v2. See function doc of Swapper.quote()
+
+        :return: (float, bool)
+        """
         try:
             raw_amount = self.uniswap.get_price_input(input_token, output_token, raw_qty)
         except web3.exceptions.ContractLogicError as err:
@@ -163,6 +275,13 @@ class Swapper:
             return amount
 
     def quote(self, input_token, output_token, qty_=0, symbol=None, decimals=0, out_symbol=None, out_decimals=0):
+        """
+        Wrapper function that retrieves a quote from the dex backend. If no quantity is given then we check the users
+        balance and use that as the qty. Function just passes parameters to the appropriate uniswap version quote
+        function. See documentation of Swapper.swap()
+
+        :return: (int, bool) the quote as a floating point
+        """
 
         self._print.normal(f'Input token is: {symbol} @ {input_token} with decimals: {decimals}')
         self._print.normal(f'Output token is {out_symbol} @ {output_token} with decimals: {out_decimals}')
@@ -172,28 +291,43 @@ class Swapper:
             self._print.normal(f'No quantity give, so swap entire raw balance of: {bal}')
         self._print.debug(f'Quote Qty is: {qty_}')
         if self.version == 3:
-            return self.quote_v3(input_token=input_token, output_token=output_token, out_decimals=out_decimals, raw_qty=qty_)
+            return self.quote_v3(input_token=input_token, output_token=output_token, out_decimals=out_decimals,
+                                 raw_qty=qty_)
         elif self.version == 2:
-            return self.quote_v2(input_token=input_token, output_token=output_token, out_decimals=out_decimals, raw_qty=qty_)
+            return self.quote_v2(input_token=input_token, output_token=output_token, out_decimals=out_decimals,
+                                 raw_qty=qty_)
 
     def swap(self, input_token: str, output_token: str, _qty: (float, int) = 0, raw_qty: int = 0, recipient: str = None,
-             no_prompt: bool = False):
+             no_prompt: bool = False) -> (bool, hex):
+        """
+        Main logic function. First, verify the input is correct. Then perform a quote, and ask the user to accept
+        unless no_prompt is enabled. Finally, execute trade and return hex txid.
+
+        :param input_token: token to sell
+        :param output_token: token to buy
+        :param _qty: float point qty
+        :param raw_qty: integer raw qty
+        :param recipient: optional alternative receiving address
+        :param no_prompt: do not confirm quote, just trade
+        :return: (bool, hex txid)
+        """
         self.eth_balance = self.w3.eth.get_balance(self.address)
-        self._print.normal(f'Native {self.native_currency()} balance of this account: {self.eth_balance}')
-        symbol, decimals, input_token, output_token, out_symbol, out_decimals = self.verify(input_token, output_token)
-        # print(symbol, decimals, input_token, output_token, out_symbol, out_decimals)
+        self._print.normal(f'Native {self.native_assets} balance of this account: {self.eth_balance}')
+        input_symbol, input_decimals, input_token, output_token, out_symbol, out_decimals = self.verify(input_token,
+                                                                                                        output_token)
 
         if raw_qty > 0:
             _qty = raw_qty
         if _qty > 0:
-            _qty = int(_qty) * 10 ** decimals
+            _qty = int(_qty) * 10 ** input_decimals
         if _qty == 0.0:
             bal = self.balance(input_token)
             _qty = bal
-            self._print.normal(f'Qty is Full Balance: {bal / 10 **decimals}')
+            self._print.normal(f'Qty is Full Balance: {bal / 10 ** input_decimals}')
         else:
             self._print.normal(f'Qty is : {_qty}')
-        quote = self.quote(input_token, output_token, qty_=_qty, symbol=symbol, decimals=decimals, out_symbol=out_symbol, out_decimals=out_decimals)
+        quote = self.quote(input_token, output_token, qty_=_qty, symbol=input_symbol, decimals=input_decimals,
+                           out_symbol=out_symbol, out_decimals=out_decimals)
         if not quote:
             return False
         self._print.normal(f'Quote is {quote}')
@@ -218,7 +352,8 @@ if __name__ == '__main__':
     args.add_argument('-q', '--quantity', dest='quantity', type=float, default=0.0, help='Float quantity.')
     args.add_argument('-R', '--raw_quantity', dest='raw_quantity', type=int, default=0, help='Raw quantity.')
     args.add_argument('-r', '--recipient', dest='recipient_address', type=str, help='Optional destination address.')
-    args.add_argument('-n', '--no_prompt', dest='no_prompt', action='store_true', help='Do not prompt to confirm quote.')
+    args.add_argument('-n', '--no_prompt', dest='no_prompt', action='store_true',
+                      help='Do not prompt to confirm quote.')
     args.add_argument('-N', '--network', dest='network_name', default='ethereum', choices=['ethereum', 'polygon'],
                       help='The network to connect to.')
     args.add_argument('-uv', '--uniswap_version', type=int, default=2, choices=[2, 3], help='Uniswap version.')
@@ -260,7 +395,8 @@ if __name__ == '__main__':
     s.normal(f'Network is: {args.network_name}')
     s.normal(
         f'Params: IN: {args.input_token}, OUT: {args.output_token}, QTY: {args.quantity}, RAW: {args.raw_quantity}')
-    uni = Swapper(private_key, address, version=int(args.uniswap_version), network=args.network_name, backend=args.backend)
+    uni = Swapper(private_key, address, version=int(args.uniswap_version), network=args.network_name,
+                  backend=args.backend)
     if uni.uniswap is None:
         print('Uniswap not configured succesfully , exiting')
         exit(1)
@@ -270,7 +406,8 @@ if __name__ == '__main__':
         exit(0)
     else:
         if txid:
-            txhex = web3.Web3.to_hex(txid)
-            s.good(f'TXID: {txhex}')
+            txhex = web3.Web3.toHex(txid)
+            s.good(f'TXID: {txhex} found, polling ...')
+            uni.poll_tx_for_receipt(txhex)
         else:
             s.error('Some Error Occurred.')
