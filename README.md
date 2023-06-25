@@ -1,5 +1,18 @@
 # Python Command Line Dex Swap Tool
 
+### Changelog
+
+<p>
+<b>
+New Release ~ 6/25/23
+
+- Many bugfixes
+- argparse is now more intuitive
+- check back soon, I am going to add out of box support for many more chains!
+
+</b>
+</p>
+
 <p>
 Swap assets on uniswap, sushiswap, and kyberswap. Easily can be modified 
 to support any dex that is a direct fork of uniswap by modifying the 
@@ -21,19 +34,15 @@ it is one of the things on the TODO list.
 <pre>
 usage: Pyswap Usage. See docs for details.
 
+usage: pySwap Usage. See docs for details.
+
+positional arguments:
+  {quote,swap}
+    quote               Get a quote for a given swap.
+    swap                Perform a token swap.
+
 options:
   -h, --help            show this help message and exit
-  -i INPUT_TOKEN, --input INPUT_TOKEN
-                        Contract address or known token symbol.
-  -o OUTPUT_TOKEN, --output OUTPUT_TOKEN
-                        Contract address or known token symbol.
-  -q QUANTITY, --quantity QUANTITY
-                        Float quantity.
-  -R RAW_QUANTITY, --raw_quantity RAW_QUANTITY
-                        Raw quantity.
-  -r RECIPIENT_ADDRESS, --recipient RECIPIENT_ADDRESS
-                        Optional destination address.
-  -n, --no_prompt       Do not prompt to confirm quote.
   -N {ethereum,polygon}, --network {ethereum,polygon}
                         The network to connect to.
   -uv {2,3}, --uniswap_version {2,3}
@@ -44,6 +53,8 @@ options:
                         Specify a private key directly
   -b {sushiswap,uniswap,kyberswap}, --backend {sushiswap,uniswap,kyberswap}
                         Dex to connect to.
+  -d, --debug           Enable some developer features.
+
 
 </pre>
 
